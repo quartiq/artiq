@@ -12,8 +12,8 @@ class Phy(Module):
                               enable_replace=True))
         self.sync.rtio += [
             If(self.rtlink.o.stb,
-                Array(regs)[self.rtlink.o.address].eq(self.rtlink.o.data)
-            )
+               Array(regs)[self.rtlink.o.address].eq(self.rtlink.o.data)
+               )
         ]
 
 
@@ -25,6 +25,29 @@ class DDSChannel(Module):
         self.submodules.frequency = Phy([i.f for i in self.dds.i])
         self.submodules.phase_amplitude = Phy(
             [Cat(i.a, i.clr, i.p) for i in self.dds.i])
+
+
+class FftLoad(Module):
+    def __init__(self, width_data, coef_per_frame):
+        self.body = [Signal(width_data, reset_less=True) for _ in range(coef_per_frame + 1)]
+        self.fft_frame = Signal()  # fft frame done flag. cleared after every write.
+        self.rtlink = rtlink.Interface(
+            rtlink.OInterface(data_width=32, address_width=6,
+                              enable_replace=False))
+        self.sync.rtio += [
+            # If(fft_frame_rst, self.fft_frame.eq(0)),  # THIS BREAKS THE BITSTREAM!!!
+            If(self.rtlink.o.stb,
+               Array(self.body)[self.rtlink.o.address].eq(self.rtlink.o.data),
+               If(((self.rtlink.o.address & 0x3f) == 0x3f) & (self.rtlink.o.data == 1),
+                  # if at the extra fft frame adress
+                  self.fft_frame.eq(1),
+                  ),
+
+               If(((self.rtlink.o.address & 0x3f) == 0x3e) & (self.rtlink.o.data == 1),
+                  Cat(self.body).eq(0)
+                  )
+               )
+        ]
 
 
 class Phaser(Module):
@@ -40,13 +63,32 @@ class Phaser(Module):
         n_channels = 2
         n_samples = 8
         n_bits = 14
-        body = Signal(n_samples*n_channels*2*n_bits, reset_less=True)
+
+        header = Record([
+            ("we", 1),
+            ("addr", 7),
+            ("data", 8),
+            ("type", 4)
+        ])
+
+        coef_per_frame = 4
+        fft_mem_data_width = 32
+        self.submodules.fft_loader = FftLoad(fft_mem_data_width, coef_per_frame)
+
+        body = Signal(n_samples * n_channels * 2 * n_bits, reset_less=True)
+
         self.sync.rio_phy += [
-            If(self.ch0.dds.valid,  # & self.ch1.dds.valid,
-                # recent:ch0:i as low order in body
-                Cat(body).eq(Cat(self.ch0.dds.o.i[2:], self.ch0.dds.o.q[2:],
-                                 self.ch1.dds.o.i[2:], self.ch1.dds.o.q[2:],
-                                 body)),
+            If(self.fft_loader.fft_frame,
+               body.eq(Cat(self.fft_loader.body)),
+               header.type.eq(2),
+               ).Else(
+                If(self.ch0.dds.valid,  # & self.ch1.dds.valid,
+                   # recent:ch0:i as low order in body
+                   Cat(body).eq(Cat(self.ch0.dds.o.i[2:], self.ch0.dds.o.q[2:],
+                                    self.ch1.dds.o.i[2:], self.ch1.dds.o.q[2:],
+                                    body)),
+                   header.type.eq(1),
+                   ),
             ),
         ]
 
@@ -59,31 +101,28 @@ class Phaser(Module):
             self.serializer.data[-1].eq(self.intf.data[-1]),
         ]
 
-        header = Record([
-            ("we", 1),
-            ("addr", 7),
-            ("data", 8),
-            ("type", 4)
-        ])
         assert len(Cat(header.raw_bits(), body)) == \
-                len(self.serializer.payload)
+               len(self.serializer.payload)
+
         self.comb += self.serializer.payload.eq(Cat(header.raw_bits(), body))
 
         re_dly = Signal(3)  # stage, send, respond
         self.sync.rtio += [
-            header.type.eq(1),  # body type is baseband data
             If(self.serializer.stb,
-                self.ch0.dds.stb.eq(1),  # synchronize
-                self.ch1.dds.stb.eq(1),  # synchronize
-                header.we.eq(0),
-                re_dly.eq(re_dly[1:]),
-            ),
+               self.ch0.dds.stb.eq(1),  # synchronize
+               self.ch1.dds.stb.eq(1),  # synchronize
+               header.we.eq(0),
+               re_dly.eq(re_dly[1:]),
+               If(self.fft_loader.fft_frame == 1, self.fft_loader.fft_frame.eq(0)),
+               ),
             If(self.rtlink.o.stb,
-                re_dly[-1].eq(~self.rtlink.o.address[-1]),
-                header.we.eq(self.rtlink.o.address[-1]),
-                header.addr.eq(self.rtlink.o.address),
-                header.data.eq(self.rtlink.o.data),
-            ),
+               re_dly[-1].eq(~self.rtlink.o.address[-1]),
+               header.we.eq(self.rtlink.o.address[-1]),
+               header.addr.eq(self.rtlink.o.address),
+               header.data.eq(self.rtlink.o.data),
+               # use last register as internal fft_load flag
+               ),
             self.rtlink.i.stb.eq(re_dly[0] & self.serializer.stb),
             self.rtlink.i.data.eq(self.serializer.readback),
+
         ]
