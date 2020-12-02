@@ -95,7 +95,7 @@ class Phaser(Module):
                    header.type.eq(1),
                    ),
             ),
-            If(self.serializer.stb, fftbody.eq(0))
+            If(self.serializer.stb & fftbody, fftbody.eq(0))
         ]
 
 
