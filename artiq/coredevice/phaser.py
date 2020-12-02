@@ -369,6 +369,8 @@ class Phaser:
         """
         rtio_output((self.channel_base << 8) | (addr & 0x7f), 0)
         response = rtio_input_data(self.channel_base)
+        # rtio_input_tmestamp()
+        # at_mu()
         return response >> self.miso_delay
 
     @kernel
@@ -975,66 +977,192 @@ class PhaserPulsegen:
         self.addr = (phaser.channel_base + 5) << 8
         self.regaddr = phaser.channel_base << 8
         self.coef_per_frame = 4
+        self.total_coefs = 256
         self.width_coef = 32
+        self.tframe = (8*4*10)
 
 
 
     @kernel
-    def set_fft_load(self, set):
+    def set_trigger(self):
         """assert or de-assert fft loading by writing to the register in the phy.
         All other registers are on phaser
 
         :param coef: 1 bit flag
         """
-        rtio_output(self.regaddr, set)
+        rtio_output(self.regaddr | PHASER_ADDR_STFT_TRIGGER, 1)
+
+    @kernel
+    def set_pulsesettings(self, set):
+        """assert or de-assert fft loading by writing to the register in the phy.
+        All other registers are on phaser
+
+        :param coef: 1 bit flag
+        """
+        rtio_output(self.regaddr | PHASER_ADDR_STFT_SET, set)
+
+    @kernel
+    def set_fft_size(self, size):
+        """assert or de-assert fft loading by writing to the register in the phy.
+        All other registers are on phaser
+
+        :param coef: 1 bit flag
+        """
+        rtio_output(self.regaddr | PHASER_ADDR_STFT_FFT_SIZE, size)
+
+    @kernel
+    def set_shiftmask(self, mask):
+        """assert or de-assert fft loading by writing to the register in the phy.
+        All other registers are on phaser
+
+        :param coef: 1 bit flag
+        """
+        rtio_output(self.regaddr | PHASER_ADDR_STFT_FFT_SHIFTMASK, mask)
+
+    @kernel
+    def set_nr_repeats(self, rep):
+        """assert or de-assert fft loading by writing to the register in the phy.
+        All other registers are on phaser
+
+        :param coef: 1 bit flag
+        """
+        rtio_output(self.regaddr | PHASER_ADDR_STFT_REPEATER, rep)
+
+    @kernel
+    def start_fft(self):
+        """assert or de-assert fft loading by writing to the register in the phy.
+        All other registers are on phaser
+
+        :param coef: 1 bit flag
+        """
+        rtio_output(self.regaddr | PHASER_ADDR_STFT_FFT_START, 1)
+
+    @kernel
+    def set_interpolation_rate(self, rate):
+        """assert or de-assert fft loading by writing to the register in the phy.
+        All other registers are on phaser
+
+        :param coef: 1 bit flag
+        """
+        rtio_output(self.regaddr | PHASER_ADDR_STFT_INT_RATE, rate)
+
+    @kernel
+    def check_fft_busy(self) -> TInt32:
+        """Read from FPGA register.
+
+        :param addr: Address to read from (7 bit)
+        :return: Data read (8 bit)
+        """
+        rtio_output((self.channel_base << 8) | PHASER_ADDR_STFT_FFT_BUSY, 0)
+        response = rtio_input_data(self.channel_base)
+        return response >> self.miso_delay
+
+    @kernel
+    def check_pulsegen_busy(self) -> TInt32:
+        """Read from FPGA register.
+
+        :param addr: Address to read from (7 bit)
+        :return: Data read (8 bit)
+        """
+        rtio_output((self.channel_base << 8) | PHASER_ADDR_STFT_PULSEGEN_BUSY, 0)
+        response = rtio_input_data(self.channel_base)
+        return response >> self.miso_delay
+
 
 
     @kernel
-    def write_coef_adr(self, adr):
-        """write fft memory address of a frame via rtlink
+    def send_coef(self, adr, real, imag):
+        """send a set (max. nr_coef_per_frame) of consecutive fft coefficients to phaser
+        starting at adress adr
+
+        :param adr: frame fft mem base address
+        :param real: real part coefficient list
+        :param imag: imaginary part list
+
+        """
+        if (len(real) | len(imag)) > self.coef_per_frame:
+            raise ValueError("Nr coefficients doesn't fit into one frame.")
+        if len(real) != len(imag):
+            raise ValueError("length mismatch")
+
+        self.clear_staging_area()
+        delay_mu(8)
+        self.stage_coef_adr(adr)
+        delay_mu(8)
+        for n in range(len(real)+1):
+            self.stage_coef_data(n, real[n], imag[n])
+            delay_mu(8)
+        self.send_frame()
+
+    @kernel
+    def clear_staging_area(self):
+        """clears the frame staging area in the phy
+        """
+        rtio_output(self.addr | 0x3e, 1)
+
+    @kernel
+    def stage_coef_adr(self, adr):
+        """write fft memory address of a frame into staging area
 
         :param adr: frame fft mem base address
         """
         rtio_output(self.addr, adr)
 
     @kernel
-    def write_coef_data(self, pos, i, q):
-        """write i/q data in frame location
+    def stage_coef_data(self, pos, r, i):
+        """write i/q data in staging frame location
 
         :param pos: frame loaction
-        :param i: inphase data
-        :param q: quadrature data
+        :param r: real data
+        :param i: imag data
         """
-        dat = q | (i << 16)
+        dat = r | i<<16
         rtio_output(self.addr | (pos+1), dat)
 
     @kernel
-    def send_frame(self, set):
+    def send_frame(self):
         """send out a frame
         """
-        rtio_output(self.addr | 0x3f, set)
+        rtio_output(self.addr | 0x3f, 1)
 
+    @kernel
+    def send_full_coef(self, real, imag):
+        """sends a full fft coefficient set to phaser
 
-    # @kernel
-    # def send_fft_coef(self, coef):
-    #     """sends a full fft coefficient set to phaser
-    #
-    #     :param coef: 32 bit array
-    #     """
-    #
-    #
-    #     i = 1
-    #     adr = 0
-    #     frame = 0
-    #     for c in coef:
-    #         frame = frame | c << (i * self.width_coef)
-    #         i += 1
-    #         if i == self.coef_per_frame:
-    #             frame = frame | adr
-    #             adr += self.coef_per_frame
-    #             i = 0
-    #             self.write_coef_frame(frame)
+        :param coef: 2D i/q data array
+        """
+        if len(real) != len(imag):
+            raise ValueError("length mismatch")
 
+        i = 0
+        for n in range(len(real)):
+            self.stage_coef_data(i, real[n], imag[n])
+            delay_mu(8)
+            # print(i)
+            # delay(10*ms)
+            i += 1
+            if i == self.coef_per_frame:
+                print(n - self.coef_per_frame + 1)
+                delay(500 * ms)
+                self.stage_coef_adr(n - self.coef_per_frame + 1)
+                delay_mu(8)
+                i = 0
+                self.send_frame()
+                delay_mu(int64(self.tframe))
+
+    @kernel
+    def clear_full_coef(self):
+        """sets all coefficients on phaser to zero
+
+        """
+        for n in range(int(self.total_coefs // self.coef_per_frame)):
+            self.clear_staging_area()
+            # print(n * self.coef_per_frame)
+            delay_mu(8)
+            self.stage_coef_adr(n * self.coef_per_frame)
+            delay_mu(5000)
+            self.send_frame()
+            delay_mu(int64(self.tframe))
 
 
 

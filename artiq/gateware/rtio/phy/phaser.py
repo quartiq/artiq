@@ -37,16 +37,15 @@ class FftLoad(Module):
         self.sync.rtio += [
             # If(fft_frame_rst, self.fft_frame.eq(0)),  # THIS BREAKS THE BITSTREAM!!!
             If(self.rtlink.o.stb,
-               Array(self.body)[self.rtlink.o.address].eq(self.rtlink.o.data),
                If(((self.rtlink.o.address & 0x3f) == 0x3f) & (self.rtlink.o.data == 1),
                   # if at the extra fft frame adress
                   self.fft_frame.eq(1),
-                  ),
-
-               If(((self.rtlink.o.address & 0x3f) == 0x3e) & (self.rtlink.o.data == 1),
+                  ).Elif(((self.rtlink.o.address & 0x3f) == 0x3e) & (self.rtlink.o.data == 1),
                   Cat(self.body).eq(0)
-                  )
+                  ).Else(
+                   Array(self.body)[self.rtlink.o.address].eq(self.rtlink.o.data),
                )
+            )
         ]
 
 
@@ -71,17 +70,23 @@ class Phaser(Module):
             ("type", 4)
         ])
 
+        self.submodules.serializer = SerDes(
+            n_data=8, t_clk=8, d_clk=0b00001111,
+            n_frame=10, n_crc=6, poly=0x2f)
+
         coef_per_frame = 4
         fft_mem_data_width = 32
         self.submodules.fft_loader = FftLoad(fft_mem_data_width, coef_per_frame)
 
         body = Signal(n_samples * n_channels * 2 * n_bits, reset_less=True)
+        fftbody = Signal()
 
         self.sync.rio_phy += [
             If(self.fft_loader.fft_frame,
                body.eq(Cat(self.fft_loader.body)),
                header.type.eq(2),
-               ).Else(
+               fftbody.eq(1)
+               ).Elif(~fftbody,
                 If(self.ch0.dds.valid,  # & self.ch1.dds.valid,
                    # recent:ch0:i as low order in body
                    Cat(body).eq(Cat(self.ch0.dds.o.i[2:], self.ch0.dds.o.q[2:],
@@ -90,11 +95,10 @@ class Phaser(Module):
                    header.type.eq(1),
                    ),
             ),
+            If(self.serializer.stb, fftbody.eq(0))
         ]
 
-        self.submodules.serializer = SerDes(
-            n_data=8, t_clk=8, d_clk=0b00001111,
-            n_frame=10, n_crc=6, poly=0x2f)
+
         self.submodules.intf = SerInterface(pins, pins_n)
         self.comb += [
             Cat(self.intf.data[:-1]).eq(Cat(self.serializer.data[:-1])),
@@ -120,7 +124,6 @@ class Phaser(Module):
                header.we.eq(self.rtlink.o.address[-1]),
                header.addr.eq(self.rtlink.o.address),
                header.data.eq(self.rtlink.o.data),
-               # use last register as internal fft_load flag
                ),
             self.rtlink.i.stb.eq(re_dly[0] & self.serializer.stb),
             self.rtlink.i.data.eq(self.serializer.readback),
