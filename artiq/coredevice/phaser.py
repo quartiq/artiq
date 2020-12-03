@@ -990,7 +990,7 @@ class PhaserPulsegen:
 
         :param coef: 1 bit flag
         """
-        rtio_output(self.regaddr | PHASER_ADDR_STFT_TRIGGER, 1)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_TRIGGER, 1)
 
     @kernel
     def set_pulsesettings(self, set):
@@ -999,7 +999,7 @@ class PhaserPulsegen:
 
         :param coef: 1 bit flag
         """
-        rtio_output(self.regaddr | PHASER_ADDR_STFT_SET, set)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_SET, set)
 
     @kernel
     def set_fft_size(self, size):
@@ -1008,7 +1008,7 @@ class PhaserPulsegen:
 
         :param coef: 1 bit flag
         """
-        rtio_output(self.regaddr | PHASER_ADDR_STFT_FFT_SIZE, size)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SIZE, size)
 
     @kernel
     def set_shiftmask(self, mask):
@@ -1017,7 +1017,7 @@ class PhaserPulsegen:
 
         :param coef: 1 bit flag
         """
-        rtio_output(self.regaddr | PHASER_ADDR_STFT_FFT_SHIFTMASK, mask)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK, mask)
 
     @kernel
     def set_nr_repeats(self, rep):
@@ -1026,7 +1026,7 @@ class PhaserPulsegen:
 
         :param coef: 1 bit flag
         """
-        rtio_output(self.regaddr | PHASER_ADDR_STFT_REPEATER, rep)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_REPEATER, rep)
 
     @kernel
     def start_fft(self):
@@ -1035,7 +1035,7 @@ class PhaserPulsegen:
 
         :param coef: 1 bit flag
         """
-        rtio_output(self.regaddr | PHASER_ADDR_STFT_FFT_START, 1)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_START, 1)
 
     @kernel
     def set_interpolation_rate(self, rate):
@@ -1044,7 +1044,7 @@ class PhaserPulsegen:
 
         :param coef: 1 bit flag
         """
-        rtio_output(self.regaddr | PHASER_ADDR_STFT_INT_RATE, rate)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE, rate)
 
     @kernel
     def check_fft_busy(self) -> TInt32:
@@ -1089,7 +1089,7 @@ class PhaserPulsegen:
         delay_mu(8)
         self.stage_coef_adr(adr)
         delay_mu(8)
-        for n in range(len(real)+1):
+        for n in range(len(real)):
             self.stage_coef_data(n, real[n], imag[n])
             delay_mu(8)
         self.send_frame()
@@ -1124,6 +1124,7 @@ class PhaserPulsegen:
         """send out a frame
         """
         rtio_output(self.addr | 0x3f, 1)
+        delay_mu(int64(self.tframe))
 
     @kernel
     def send_full_coef(self, real, imag):
@@ -1138,17 +1139,14 @@ class PhaserPulsegen:
         for n in range(len(real)):
             self.stage_coef_data(i, real[n], imag[n])
             delay_mu(8)
-            # print(i)
-            # delay(10*ms)
             i += 1
             if i == self.coef_per_frame:
-                print(n - self.coef_per_frame + 1)
-                delay(500 * ms)
+                # print(n - self.coef_per_frame + 1)
+                delay(50 * ms)
                 self.stage_coef_adr(n - self.coef_per_frame + 1)
                 delay_mu(8)
                 i = 0
                 self.send_frame()
-                delay_mu(int64(self.tframe))
 
     @kernel
     def clear_full_coef(self):
@@ -1162,7 +1160,6 @@ class PhaserPulsegen:
             self.stage_coef_adr(n * self.coef_per_frame)
             delay_mu(5000)
             self.send_frame()
-            delay_mu(int64(self.tframe))
 
 
 
