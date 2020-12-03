@@ -984,74 +984,71 @@ class PhaserPulsegen:
 
 
     @kernel
-    def set_trigger(self):
-        """assert or de-assert fft loading by writing to the register in the phy.
-        All other registers are on phaser
-
-        :param coef: 1 bit flag
+    def trigger(self):
+        """Sets the pulsegen trigger flag. A pulse will be emitted as soon as the fft computation
+        is finished.
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_TRIGGER, 1)
 
     @kernel
     def set_pulsesettings(self, set):
-        """assert or de-assert fft loading by writing to the register in the phy.
-        All other registers are on phaser
+        """write to pulsesettings register
 
-        :param coef: 1 bit flag
+        :param set: settings word
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_SET, set)
 
     @kernel
     def set_fft_size(self, size):
-        """assert or de-assert fft loading by writing to the register in the phy.
-        All other registers are on phaser
+        """sets the fft readout size (NOT IMPLEMENTED YET)
 
-        :param coef: 1 bit flag
+        :param size: fft size
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SIZE, size)
 
     @kernel
     def set_shiftmask(self, mask):
-        """assert or de-assert fft loading by writing to the register in the phy.
-        All other registers are on phaser
+        """sets the fft shiftmask register
 
-        :param coef: 1 bit flag
+        :param mask: shiftmask (16 bit)
         """
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK, mask)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK, mask & 0xff)
+        delay_mu(int64(self.tframe))
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK - 1, mask >> 8)
+
 
     @kernel
     def set_nr_repeats(self, rep):
-        """assert or de-assert fft loading by writing to the register in the phy.
-        All other registers are on phaser
+        """sets the number of fft repeats
 
-        :param coef: 1 bit flag
+        :param rep: nr repetitions (16 bit)
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_REPEATER, rep)
+        delay_mu(int64(self.tframe))
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_REPEATER - 1, rep >> 8)
 
     @kernel
     def start_fft(self):
-        """assert or de-assert fft loading by writing to the register in the phy.
-        All other registers are on phaser
+        """starts the fft computation
 
-        :param coef: 1 bit flag
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_START, 1)
 
     @kernel
     def set_interpolation_rate(self, rate):
-        """assert or de-assert fft loading by writing to the register in the phy.
-        All other registers are on phaser
+        """set the interpolation rate
 
-        :param coef: 1 bit flag
+        :param rate: interpolation rate (16 bit)
         """
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE, rate)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE, rate & 0xff)
+        delay_mu(int64(self.tframe))
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE - 1, rate >> 8)
+
+
 
     @kernel
     def check_fft_busy(self) -> TInt32:
-        """Read from FPGA register.
-
-        :param addr: Address to read from (7 bit)
-        :return: Data read (8 bit)
+        """checks if in fft computation
         """
         rtio_output((self.channel_base << 8) | PHASER_ADDR_STFT_FFT_BUSY, 0)
         response = rtio_input_data(self.channel_base)
@@ -1059,10 +1056,7 @@ class PhaserPulsegen:
 
     @kernel
     def check_pulsegen_busy(self) -> TInt32:
-        """Read from FPGA register.
-
-        :param addr: Address to read from (7 bit)
-        :return: Data read (8 bit)
+        """check if pulsegen is currently emitting a pulse
         """
         rtio_output((self.channel_base << 8) | PHASER_ADDR_STFT_PULSEGEN_BUSY, 0)
         response = rtio_input_data(self.channel_base)
@@ -1141,8 +1135,6 @@ class PhaserPulsegen:
             delay_mu(8)
             i += 1
             if i == self.coef_per_frame:
-                # print(n - self.coef_per_frame + 1)
-                delay(50 * ms)
                 self.stage_coef_adr(n - self.coef_per_frame + 1)
                 delay_mu(8)
                 i = 0
@@ -1155,7 +1147,6 @@ class PhaserPulsegen:
         """
         for n in range(int(self.total_coefs // self.coef_per_frame)):
             self.clear_staging_area()
-            # print(n * self.coef_per_frame)
             delay_mu(8)
             self.stage_coef_adr(n * self.coef_per_frame)
             delay_mu(5000)
