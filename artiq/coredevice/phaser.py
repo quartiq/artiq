@@ -991,7 +991,7 @@ class PhaserPulsegen:
         is finished.
         """
         rtio_output(self.regaddr, 0)  # read some phaser reg (board id here)
-        self.frame_tstamp = rtio_input_tmestamp()
+        self.frame_tstamp = rtio_input_timestamp()
 
     @kernel
     def trigger(self):
@@ -999,6 +999,7 @@ class PhaserPulsegen:
         is finished.
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_TRIGGER, 1)
+        delay_mu(int64(self.tframe))
 
     @kernel
     def set_pulsesettings(self, set):
@@ -1007,6 +1008,7 @@ class PhaserPulsegen:
         :param set: settings word
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_SET, set)
+        delay_mu(int64(self.tframe))
 
     @kernel
     def set_fft_size(self, size):
@@ -1015,6 +1017,7 @@ class PhaserPulsegen:
         :param size: fft size
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SIZE, size)
+        delay_mu(int64(self.tframe))
 
     @kernel
     def set_shiftmask(self, mask):
@@ -1025,6 +1028,7 @@ class PhaserPulsegen:
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK, mask & 0xff)
         delay_mu(int64(self.tframe))
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK - 1, mask >> 8)
+        delay_mu(int64(self.tframe))
 
 
     @kernel
@@ -1036,6 +1040,7 @@ class PhaserPulsegen:
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_REPEATER, rep)
         delay_mu(int64(self.tframe))
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_REPEATER - 1, rep >> 8)
+        delay_mu(int64(self.tframe))
 
     @kernel
     def start_fft(self):
@@ -1043,6 +1048,7 @@ class PhaserPulsegen:
 
         """
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_START, 1)
+        delay_mu(int64(self.tframe))
 
     @kernel
     def set_interpolation_rate(self, rate):
@@ -1053,6 +1059,7 @@ class PhaserPulsegen:
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE, rate & 0xff)
         delay_mu(int64(self.tframe))
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE - 1, rate >> 8)
+        delay_mu(int64(self.tframe))
 
 
 
