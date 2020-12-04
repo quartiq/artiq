@@ -1,5 +1,6 @@
 from artiq.language.core import kernel, delay_mu, delay
 from artiq.coredevice.rtio import *
+from artiq.coredevice.core import rtio_get_counter
 from artiq.language.units import us, ns, ms, MHz, dB
 from artiq.language.types import TInt32
 from artiq.coredevice.dac34h84 import DAC34H84
@@ -192,7 +193,7 @@ class Phaser:
         conditions.
         """
 
-        while rtio_input_timestamp(rtio_counter(), self.channel_base << 8) >= 0: pass  # clear pending inputs
+        while rtio_input_timestamp(rtio_get_counter(), self.channel_base) >= 0: pass
         board_id = self.read8(PHASER_ADDR_BOARD_ID)
         if board_id != PHASER_BOARD_ID:
             raise ValueError("invalid board id")
@@ -994,7 +995,10 @@ class PhaserPulsegen:
         is finished.
         """
         rtio_output(self.regaddr, 0)  # read some phaser reg (board id here)
-        self.frame_tstamp = rtio_input_timestamp(0xffffff, self.regaddr>>8)
+        delay_mu(int64(self.tframe))
+        self.frame_tstamp = rtio_input_timestamp(rtio_get_counter()+0xffffff, self.regaddr>>8)
+        print(self.frame_tstamp)
+        delay(10*ms)
 
     @kernel
     def trigger(self):
