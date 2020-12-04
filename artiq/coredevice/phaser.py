@@ -369,8 +369,9 @@ class Phaser:
         """
         rtio_output((self.channel_base << 8) | (addr & 0x7f), 0)
         response = rtio_input_data(self.channel_base)
-        # rtio_input_tmestamp()
-        # at_mu()
+        # t rtio_input_tmestamp()
+        # at_mu(t)
+        #
         return response >> self.miso_delay
 
     @kernel
@@ -976,12 +977,21 @@ class PhaserPulsegen:
     def __init__(self, phaser):
         self.addr = (phaser.channel_base + 5) << 8
         self.regaddr = phaser.channel_base << 8
-        self.coef_per_frame = 4
-        self.total_coefs = 256
+        self.coef_per_frame = 12
+        self.total_coefs = 64
         self.width_coef = 32
         self.tframe = (8*4*10)
 
+        self.frame_tstamp = 0
 
+
+    @kernel
+    def get_frame_timestamp(self):
+        """Sets the pulsegen trigger flag. A pulse will be emitted as soon as the fft computation
+        is finished.
+        """
+        rtio_output(self.regaddr, 0)  # read some phaser reg (board id here)
+        self.frame_tstamp = rtio_input_tmestamp()
 
     @kernel
     def trigger(self):
@@ -1074,6 +1084,7 @@ class PhaserPulsegen:
         :param imag: imaginary part list
 
         """
+        print(self.coef_per_frame)
         if (len(real) | len(imag)) > self.coef_per_frame:
             raise ValueError("Nr coefficients doesn't fit into one frame.")
         if len(real) != len(imag):
@@ -1110,7 +1121,7 @@ class PhaserPulsegen:
         :param r: real data
         :param i: imag data
         """
-        dat = r | i<<16
+        dat = r | i << 16
         rtio_output(self.addr | (pos+1), dat)
 
     @kernel
@@ -1124,18 +1135,21 @@ class PhaserPulsegen:
     def send_full_coef(self, real, imag):
         """sends a full fft coefficient set to phaser
 
-        :param coef: 2D i/q data array
+        :param real: real coefficient data array
+        :param imag: imag coefficient data array
         """
         if len(real) != len(imag):
             raise ValueError("length mismatch")
 
         i = 0
+        adr = 0
         for n in range(len(real)):
             self.stage_coef_data(i, real[n], imag[n])
             delay_mu(8)
             i += 1
-            if i == self.coef_per_frame:
-                self.stage_coef_adr(n - self.coef_per_frame + 1)
+            if (i == self.coef_per_frame) or (n == len(real) - 1):
+                self.stage_coef_adr(adr)
+                adr = adr + self.coef_per_frame
                 delay_mu(8)
                 i = 0
                 self.send_frame()
@@ -1145,11 +1159,10 @@ class PhaserPulsegen:
         """sets all coefficients on phaser to zero
 
         """
-        for n in range(int(self.total_coefs // self.coef_per_frame)):
+        for n in range(int(self.total_coefs / self.coef_per_frame)+1):
             self.clear_staging_area()
             delay_mu(8)
             self.stage_coef_adr(n * self.coef_per_frame)
-            delay_mu(5000)
             self.send_frame()
 
 
