@@ -1,9 +1,10 @@
 from artiq.language.core import kernel, delay_mu, delay
-from artiq.coredevice.rtio import rtio_output, rtio_input_data
+from artiq.coredevice.rtio import *
 from artiq.language.units import us, ns, ms, MHz, dB
 from artiq.language.types import TInt32
 from artiq.coredevice.dac34h84 import DAC34H84
 from artiq.coredevice.trf372017 import TRF372017
+from numpy import int64
 
 
 PHASER_BOARD_ID = 19
@@ -982,7 +983,7 @@ class PhaserPulsegen:
         self.width_coef = 32
         self.tframe = (8*4*10)
 
-        self.frame_tstamp = 0
+        self.frame_tstamp = int64(0)
 
 
     @kernel
@@ -991,7 +992,7 @@ class PhaserPulsegen:
         is finished.
         """
         rtio_output(self.regaddr, 0)  # read some phaser reg (board id here)
-        self.frame_tstamp = rtio_input_timestamp()
+        self.frame_tstamp = rtio_input_timestamp(0xffffff, self.regaddr>>8)
 
     @kernel
     def trigger(self):
@@ -1170,6 +1171,7 @@ class PhaserPulsegen:
             self.clear_staging_area()
             delay_mu(8)
             self.stage_coef_adr(n * self.coef_per_frame)
+            delay_mu(8)
             self.send_frame()
 
 
