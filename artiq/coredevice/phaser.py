@@ -191,6 +191,8 @@ class Phaser:
         communication and configuration tests and establishes initial
         conditions.
         """
+
+        while rtio_input_timestamp(rtio_counter(), self.channel_base << 8) >= 0: pass  # clear pending inputs
         board_id = self.read8(PHASER_ADDR_BOARD_ID)
         if board_id != PHASER_BOARD_ID:
             raise ValueError("invalid board id")
@@ -1161,6 +1163,8 @@ class PhaserPulsegen:
                 delay_mu(8)
                 i = 0
                 self.send_frame()
+                self.clear_staging_area()
+                delay_mu(8)
 
     @kernel
     def clear_full_coef(self):
