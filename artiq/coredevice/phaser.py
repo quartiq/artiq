@@ -1098,7 +1098,6 @@ class PhaserPulsegen:
         :param imag: imaginary part list
 
         """
-        print(self.coef_per_frame)
         if (len(real) | len(imag)) > self.coef_per_frame:
             raise ValueError("Nr coefficients doesn't fit into one frame.")
         if len(real) != len(imag):
