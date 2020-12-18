@@ -43,14 +43,18 @@ PHASER_ADDR_DAC1_TEST = 0x2c
 # stft pulsegen adress space
 PHASER_ADDR_STFT_TRIGGER = 0x30
 PHASER_ADDR_STFT_SET = 0x31
-PHASER_ADDR_STFT_FFT_SIZE = 0x32
-PHASER_ADDR_STFT_FFT_SHIFTMASK = 0x34
+PHASER_ADDR_STFT_EN = 0x32
+PHASER_ADDR_STFT_FFT_SHIFTMASK = [0x34, 0x3d, 0x42, 0x47]  # branches 1-3 and shaper
 PHASER_ADDR_STFT_REPEATER = 0x36
-PHASER_ADDR_STFT_FFT_START = 0x37
-PHASER_ADDR_STFT_INT_RATE = 0x39
+PHASER_ADDR_STFT_FFT_START = [0x37, 0x3e, 0x43, 0x48]  # branches 1-3 and shaper
+PHASER_ADDR_STFT_INT_RATE = [0x39, 0x40, 0x45, 0x4a]  # branches 1-3 and shaper
 
 PHASER_ADDR_STFT_FFT_BUSY = 0x3a
 PHASER_ADDR_STFT_PULSEGEN_BUSY = 0x3b
+
+PHASER_ADDR_STFT_DUC_CFG = [0x4b, 0x52, 0x59]  # branches 1-3
+PHASER_ADDR_STFT_DUC_F = [0x4f, 0x56, 0x5d]  # branches 1-3
+PHASER_ADDR_STFT_DUC_P = [0x51, 0x58, 0x5f]  # branches 1-3
 
 
 
@@ -212,6 +216,7 @@ class Phaser:
         delay(.1*ms)  # slack
 
         # reset
+        self.set_stft_enable_flag(0)
         self.set_cfg(dac_resetb=0, dac_sleep=1, dac_txena=0,
                      trf0_ps=1, trf1_ps=1,
                      att0_rstn=0, att1_rstn=0)
@@ -674,6 +679,14 @@ class Phaser:
         self.dac_write(0x09, (config9 & 0x1fff) | (best << 13))
         return best
 
+    @kernel
+    def set_stft_enable_flag(self, en):
+        """Sets the stft enable flag.
+
+        :param en: enable flag
+        """
+        self.write8(PHASER_ADDR_STFT_EN, en)
+
 
 class PhaserChannel:
     """Phaser channel IQ pair.
@@ -974,6 +987,11 @@ class PhaserOscillator:
 
 class PhaserPulsegen:
     """
+    Phaser Short-Time Fourier-Transform (STFT) Pulsegenerator
+
+    The pulsegenerator can can be configured with fft coefficients and pulse parameters to
+    compute and output a pulse with specific spectral and temporal attributes.
+
     """
 
 
@@ -981,8 +999,8 @@ class PhaserPulsegen:
     def __init__(self, phaser):
         self.addr = (phaser.channel_base + 5) << 8
         self.regaddr = phaser.channel_base << 8
-        self.coef_per_frame = 12
-        self.total_coefs = 64
+        self.coef_per_frame = 13
+        self.total_coefs = 1024
         self.width_coef = 32
         self.tframe = (8*4*10)
 
@@ -996,8 +1014,7 @@ class PhaserPulsegen:
         """
         rtio_output(self.regaddr, 0)  # read some phaser reg (board id here)
         delay_mu(int64(self.tframe))
-        self.frame_tstamp = rtio_input_timestamp(rtio_get_counter()+0xffffff, self.regaddr>>8)
-        print(self.frame_tstamp)
+        self.frame_tstamp = rtio_input_timestamp(rtio_get_counter()+0xffffff, self.regaddr >> 8)
         delay(10*ms)
 
     @kernel
@@ -1009,32 +1026,26 @@ class PhaserPulsegen:
         delay_mu(int64(self.tframe))
 
     @kernel
-    def set_pulsesettings(self, set):
+    def set_pulsesettings(self, disable_window=1, gated_output=0):
         """write to pulsesettings register
 
-        :param set: settings word
+        :param disable_window: disables the "shaper" branch
+        :param gated_output: enables the gated shaper
         """
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_SET, set)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_SET, ((disable_window & 0x01)<<2) | (gated_output & 0x01))
         delay_mu(int64(self.tframe))
 
-    @kernel
-    def set_fft_size(self, size):
-        """sets the fft readout size (NOT IMPLEMENTED YET)
-
-        :param size: fft size
-        """
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SIZE, size)
-        delay_mu(int64(self.tframe))
 
     @kernel
-    def set_shiftmask(self, mask):
+    def set_shiftmask(self, id, mask):
         """sets the fft shiftmask register
 
+        :param id: fft/branch identifier
         :param mask: shiftmask (16 bit)
         """
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK, mask & 0xff)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK[id], mask & 0xff)
         delay_mu(int64(self.tframe))
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK - 1, mask >> 8)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_SHIFTMASK[id] - 1, mask >> 8)
         delay_mu(int64(self.tframe))
 
 
@@ -1044,30 +1055,31 @@ class PhaserPulsegen:
 
         :param rep: nr repetitions (16 bit)
         """
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_REPEATER, rep)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_REPEATER, rep & 0xff)
         delay_mu(int64(self.tframe))
         rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_REPEATER - 1, rep >> 8)
         delay_mu(int64(self.tframe))
 
     @kernel
-    def start_fft(self):
+    def start_fft(self, id):
         """starts the fft computation
 
+        :param id: fft/branch identifier
         """
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_START, 1)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_FFT_START[id], 1)
         delay_mu(int64(self.tframe))
 
     @kernel
-    def set_interpolation_rate(self, rate):
+    def set_interpolation_rate(self, id, rate):
         """set the interpolation rate
 
+        :param id: fft/branch identifier
         :param rate: interpolation rate (16 bit)
         """
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE, rate & 0xff)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE[id], rate & 0xff)
         delay_mu(int64(self.tframe))
-        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE - 1, rate >> 8)
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_INT_RATE[id] - 1, rate >> 8)
         delay_mu(int64(self.tframe))
-
 
 
     @kernel
@@ -1085,14 +1097,77 @@ class PhaserPulsegen:
         rtio_output((self.channel_base << 8) | PHASER_ADDR_STFT_PULSEGEN_BUSY, 0)
         response = rtio_input_data(self.channel_base)
         return response >> self.miso_delay
+    
+    
+    @kernel
+    def set_duc_cfg(self, id, clr=0, clr_once=0, select=0):
+        """Set the digital upconverter (DUC) and interpolator configuration.
 
+        :param id: fft/branch identifier
+        :param clr: Keep the phase accumulator cleared (persistent)
+        :param clr_once: Clear the phase accumulator for one cycle
+        :param select: Select the data to send to the DAC (0: DUC data, 1: test
+            data, other values: reserved)
+        """
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_DUC_CFG[id],
+                           ((clr & 1) << 0) | ((clr_once & 1) << 1) |
+                           ((select & 3) << 2))
+        delay_mu(int64(self.tframe))
+
+    @kernel
+    def set_duc_frequency_mu(self, id, ftw):
+        """Set the DUC frequency.
+
+        :param id: fft/branch identifier
+        :param ftw: DUC frequency tuning word (32 bit)
+        """
+        for offset in range(4):
+            rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_DUC_F[id] - offset, ftw & 0xff)
+            delay_mu(int64(self.tframe))
+            ftw >>= 8
+
+    @kernel
+    def set_duc_frequency(self, id, frequency):
+        """Set the DUC frequency in SI units.
+
+        :param id: fft/branch identifier
+        :param frequency: DUC frequency in Hz (passband from -200 MHz to
+            200 MHz, wrapping around at +- 250 MHz)
+        """
+        ftw = int32(round(frequency*((1 << 30)/(125*MHz))))
+        self.set_duc_frequency_mu(id, ftw)
+
+    @kernel
+    def set_duc_phase_mu(self, id, pow):
+        """Set the DUC phase offset.
+
+        :param id: fft/branch identifier
+        :param pow: DUC phase offset word (16 bit)
+        """
+
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_DUC_P[id], pow)
+        delay_mu(int64(self.tframe))
+        rtio_output(self.regaddr | 0x80 | PHASER_ADDR_STFT_DUC_P[id]-1, pow >> 8)
+        delay_mu(int64(self.tframe))
 
 
     @kernel
-    def send_coef(self, adr, real, imag):
+    def set_duc_phase(self, id, phase):
+        """Set the DUC phase in SI units.
+
+        :param id: fft/branch identifier
+        :param phase: DUC phase in turns
+        """
+        pow = int32(round(phase*(1 << 16)))
+        self.set_duc_phase_mu(id, pow)
+
+
+    @kernel
+    def send_coef(self, id, adr, real, imag):
         """send a set (max. nr_coef_per_frame) of consecutive fft coefficients to phaser
         starting at adress adr
 
+        :param id: fft/branch identifier
         :param adr: frame fft mem base address
         :param real: real part coefficient list
         :param imag: imaginary part list
@@ -1105,7 +1180,7 @@ class PhaserPulsegen:
 
         self.clear_staging_area()
         delay_mu(8)
-        self.stage_coef_adr(adr)
+        self.stage_coef_adr(id, adr)
         delay_mu(8)
         for n in range(len(real)):
             self.stage_coef_data(n, real[n], imag[n])
@@ -1119,12 +1194,14 @@ class PhaserPulsegen:
         rtio_output(self.addr | 0x3e, 1)
 
     @kernel
-    def stage_coef_adr(self, adr):
+    def stage_coef_adr(self, id, adr):
         """write fft memory address of a frame into staging area
 
+        :param id: fft/branch identifier
         :param adr: frame fft mem base address
         """
-        rtio_output(self.addr, adr)
+        dat = adr | (id << 16)
+        rtio_output(self.addr, dat)
 
     @kernel
     def stage_coef_data(self, pos, r, i):
@@ -1134,7 +1211,7 @@ class PhaserPulsegen:
         :param r: real data
         :param i: imag data
         """
-        dat = r | i << 16
+        dat = (r & 0xffff) | (i << 16)
         rtio_output(self.addr | (pos+1), dat)
 
     @kernel
@@ -1145,9 +1222,10 @@ class PhaserPulsegen:
         delay_mu(int64(self.tframe))
 
     @kernel
-    def send_full_coef(self, real, imag):
+    def send_full_coef(self, id, real, imag):
         """sends a full fft coefficient set to phaser
 
+        :param id: fft/branch identifier
         :param real: real coefficient data array
         :param imag: imag coefficient data array
         """
@@ -1156,12 +1234,14 @@ class PhaserPulsegen:
 
         i = 0
         adr = 0
+        delay_mu(8)
         for n in range(len(real)):
             self.stage_coef_data(i, real[n], imag[n])
-            delay_mu(8)
+            delay_mu(15000)
             i += 1
             if (i == self.coef_per_frame) or (n == len(real) - 1):
-                self.stage_coef_adr(adr)
+                delay_mu(1500)
+                self.stage_coef_adr(id, adr)
                 adr = adr + self.coef_per_frame
                 delay_mu(8)
                 i = 0
@@ -1170,15 +1250,17 @@ class PhaserPulsegen:
                 delay_mu(8)
 
     @kernel
-    def clear_full_coef(self):
+    def clear_full_coef(self, id):
         """sets all coefficients on phaser to zero
 
+        :param id: fft/branch identifier
         """
+        delay_mu(8)
         for n in range(int(self.total_coefs / self.coef_per_frame)+1):
             self.clear_staging_area()
             delay_mu(8)
-            self.stage_coef_adr(n * self.coef_per_frame)
-            delay_mu(8)
+            self.stage_coef_adr(id, n * self.coef_per_frame)
+            delay_mu(800)
             self.send_frame()
 
 

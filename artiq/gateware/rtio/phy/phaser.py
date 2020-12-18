@@ -74,7 +74,7 @@ class Phaser(Module):
             n_data=8, t_clk=8, d_clk=0b00001111,
             n_frame=10, n_crc=6, poly=0x2f)
 
-        coef_per_frame = 12
+        coef_per_frame = 13
         fft_mem_data_width = 32
         self.submodules.fft_loader = FftLoad(fft_mem_data_width, coef_per_frame)
 
