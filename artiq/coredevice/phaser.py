@@ -1237,7 +1237,7 @@ class PhaserPulsegen:
         delay_mu(8)
         for n in range(len(real)):
             self.stage_coef_data(i, real[n], imag[n])
-            delay_mu(15000)
+            delay_mu(150000)
             i += 1
             if (i == self.coef_per_frame) or (n == len(real) - 1):
                 delay_mu(1500)
