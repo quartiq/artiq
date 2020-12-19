@@ -253,8 +253,6 @@ class Phaser:
         # pll_ndivsync_ena disable
         config18 = self.dac_read(0x18)
         delay(.1*ms)
-        # print("config18:")
-        # print(config18)
         self.dac_write(0x18, config18 & ~0x0800)
 
         patterns = [
@@ -266,11 +264,11 @@ class Phaser:
         # FPGA+board+DAC skews. There is plenty of margin (>= 250 ps
         # either side) and no need to tune at runtime.
         # Parity provides another level of safety.
-        # for i in range(len(patterns)):
-        #     delay(.5*ms)
-        #     errors = self.dac_iotest(patterns[i])
-        #     if errors:
-        #         raise ValueError("DAC iotest failure")
+        for i in range(len(patterns)):
+            delay(.5*ms)
+            errors = self.dac_iotest(patterns[i])
+            if errors:
+                raise ValueError("DAC iotest failure")
 
         delay(2*ms)  # let it settle
         lvolt = self.dac_read(0x18) & 7
@@ -333,9 +331,7 @@ class Phaser:
             # allow ripple
             if (data_i < sqrt2 - 30 or data_i > sqrt2 or
                     abs(data_i - data_q) > 2):
-                #raise ValueError("DUC+oscillator phase/amplitude test failed")
-                print("DUC fail")
-                delay(100*ms)
+                raise ValueError("DUC+oscillator phase/amplitude test failed")
 
             if is_baseband:
                 continue
@@ -378,9 +374,6 @@ class Phaser:
         """
         rtio_output((self.channel_base << 8) | (addr & 0x7f), 0)
         response = rtio_input_data(self.channel_base)
-        # t rtio_input_tmestamp()
-        # at_mu(t)
-        #
         return response >> self.miso_delay
 
     @kernel

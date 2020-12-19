@@ -648,8 +648,7 @@ class Phaser(_EEM):
 
         phy = phaser.Phaser(
             target.platform.request("phaser{}_ser_p".format(eem)),
-            target.platform.request("phaser{}_ser_n".format(eem))
-        )
+            target.platform.request("phaser{}_ser_n".format(eem)))
         target.submodules += phy
         target.rtio_channels.extend([
             rtio.Channel.from_phy(phy, ififo_depth=4),

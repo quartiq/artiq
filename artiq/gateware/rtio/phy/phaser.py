@@ -12,8 +12,8 @@ class Phy(Module):
                               enable_replace=True))
         self.sync.rtio += [
             If(self.rtlink.o.stb,
-               Array(regs)[self.rtlink.o.address].eq(self.rtlink.o.data)
-               )
+                Array(regs)[self.rtlink.o.address].eq(self.rtlink.o.data)
+            )
         ]
 
 
