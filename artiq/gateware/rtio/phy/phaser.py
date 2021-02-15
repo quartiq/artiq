@@ -54,7 +54,7 @@ class Phaser(Module):
         self.rtlink = rtlink.Interface(
             rtlink.OInterface(data_width=8, address_width=8,
                               enable_replace=False),
-            rtlink.IInterface(data_width=10))
+            rtlink.IInterface(data_width=10, timestamped=True))
 
         # share a CosSinGen LUT between the two channels
         self.submodules.ch0 = DDSChannel()
