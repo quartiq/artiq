@@ -993,27 +993,27 @@ class PhaserPulsegen:
     Architecture:
 
     * Three branches, each containing:
-      * One 1024 point radix2 fft with variable shift schedule allowing for maximized SNR in different conditions.
-      * Two (real/imaginary signal part) variable rate interpolators:
-        * Max rate-change = 1024
-        * Possible rate-changes: 2, 4, 8, 12, 16, 20, ...
-        * Image rejection > 89.5 dB in all conditions
-        * Passband droop < 10%/0.9dB (can be compensated for in fft coefficients)
-        * Cutoff at 80% input nyquist (meaning the highest 10% of positive and negative fft coefficients cannot be used)
-      * One complex upconverter:
-        * Same as in "classic" phaser mode
-        * mHz resolution
-        * SNR > 100dB
+          * One 1024 point radix2 fft with variable shift schedule allowing for maximized SNR in different conditions.
+          * Two (real/imaginary signal part) variable rate interpolators:
+                * Max rate-change = 1024
+                * Possible rate-changes: 2, 4, 8, 12, 16, 20, ...
+                * Image rejection > 89.5 dB in all conditions
+                * Passband droop < 10%/0.9dB (can be compensated for in fft coefficients)
+                * Cutoff at 80% input nyquist (meaning the highest 10% of positive and negative fft coefficients cannot be used)
+          * One complex upconverter:
+                * Same as in "classic" phaser mode
+                * mHz resolution
+                * SNR > 100dB
     * Window/shaper path:
-      * Window specified using another 1024 point fft (however less tones can be used eg. only 3 for a hann window)
-      * Another interpolator with the same specs but a maximum rate-change of 8192
-      * Pulse emission can be triggered deterministically with single cycle (4ns) precision
+          * Window specified using another 1024 point fft (however less tones can be used eg. only 3 for a hann window)
+          * Another interpolator with the same specs but a maximum rate-change of 8192
+          * Pulse emission can be triggered deterministically with single cycle (4ns) precision
     * API:
-      * Each fft can be loaded/cleared/(re-)started individually
-      * All interpolator rates can be changed individually
-      * Pulse can be triggered either by sending a start frame from Kasli or as soon as an fft computation is done
-      * Windower/shaper can be bypassed so there is a continuous stft output
-      * Channel 1 can be switched from phaser "classic" to stft pulsegen on the fly (Ch.0 is always Ch.0 of phaser "classic")
+          * Each fft can be loaded/cleared/(re-)started individually
+          * All interpolator rates can be changed individually
+          * Pulse can be triggered either by sending a start frame from Kasli or as soon as an fft computation is done
+          * Windower/shaper can be bypassed so there is a continuous stft output
+          * Channel 1 can be switched from phaser "classic" to stft pulsegen on the fly (Ch.0 is always Ch.0 of phaser "classic")
 
     .. note:: There are a number of pitfalls in configuring the pulsegen. Coefficients, shift schedules,
         interpolation rates and upconverter frequencies have to be such that no overflows or aliasing
