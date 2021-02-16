@@ -673,10 +673,10 @@ class Phaser:
         return best
 
     @kernel
-    def set_stft_enable_flag(self, en):
+    def set_stft_enable_flag(self, en=1):
         """Sets the stft enable flag.
 
-        :param en: enable flag
+        :param en: enable flag (1 to enable, 0 to disable)
         """
         self.write8(PHASER_ADDR_STFT_EN, en)
 
@@ -979,12 +979,46 @@ class PhaserOscillator:
 
 
 class PhaserPulsegen:
-    """
-    Phaser Short-Time Fourier-Transform (STFT) Pulsegenerator
+    """Phaser Short-Time Fourier-Transform (STFT) Pulse Generator.
 
-    The pulsegenerator can can be configured with fft coefficients and pulse parameters to
-    compute and output a pulse with specific spectral and temporal attributes.
+    Synthesizer for complex, high resolution pulses.
 
+    3 sets of 1024 tones with customizable tone-spacing can be placed in a 400MHz band.
+    For Phaser Upconverter, this window can itself be placed somewhere within
+    [-400,400]MHz from the $[0.3,4.8]$GHz carrier. The pulse can be windowed in time by a
+    narrow-band window specified using 1024 fft parameters and an interpolation rate
+    and emitted with deterministic latency.
+
+
+    Architecture:
+
+    * Three branches, each containing:
+      * One 1024 point radix2 fft with variable shift schedule allowing for maximized SNR in different conditions.
+      * Two (real/imaginary signal part) variable rate interpolators:
+        * Max rate-change = 1024
+        * Possible rate-changes: 2, 4, 8, 12, 16, 20, ...
+        * Image rejection > 89.5 dB in all conditions
+        * Passband droop < 10%/0.9dB (can be compensated for in fft coefficients)
+        * Cutoff at 80% input nyquist (meaning the highest 10% of positive and negative fft coefficients cannot be used)
+      * One complex upconverter:
+        * Same as in "classic" phaser mode
+        * mHz resolution
+        * SNR > 100dB
+    * Window/shaper path:
+      * Window specified using another 1024 point fft (however less tones can be used eg. only 3 for a hann window)
+      * Another interpolator with the same specs but a maximum rate-change of 8192
+      * Pulse emission can be triggered deterministically with single cycle (4ns) precision
+    * API:
+      * Each fft can be loaded/cleared/(re-)started individually
+      * All interpolator rates can be changed individually
+      * Pulse can be triggered either by sending a start frame from Kasli or as soon as an fft computation is done
+      * Windower/shaper can be bypassed so there is a continuous stft output
+      * Channel 1 can be switched from phaser "classic" to stft pulsegen on the fly (Ch.0 is always Ch.0 of phaser "classic")
+
+    .. note:: There are a number of pitfalls in configuring the pulsegen. Coefficients, shift schedules,
+        interpolation rates and upconverter frequencies have to be such that no overflows or aliasing
+        occur in the signal processing. High distortion in the output is usually a sign of overflow,
+        while flipped/misplaced spectral components arise from aliasing.
     """
 
 
@@ -1002,8 +1036,8 @@ class PhaserPulsegen:
 
     @kernel
     def get_frame_timestamp(self):
-        """Sets the pulsegen trigger flag. A pulse will be emitted as soon as the fft computation
-        is finished.
+        """Performs a Phaser register read and records the exact frame timing in self.frame_tstamp.
+        For deterministic timing a pulse has to be triggered an integer multiple of self.tframe later.
         """
         rtio_output(self.regaddr, 0)  # read some phaser reg (board id here)
         delay_mu(int64(self.tframe))
@@ -1020,7 +1054,7 @@ class PhaserPulsegen:
 
     @kernel
     def set_pulsesettings(self, disable_window=1, gated_output=0):
-        """write to pulsesettings register
+        """Write to pulsesettings register.
 
         :param disable_window: disables the "shaper" branch
         :param gated_output: enables the gated shaper
@@ -1031,7 +1065,7 @@ class PhaserPulsegen:
 
     @kernel
     def set_shiftmask(self, id, mask):
-        """sets the fft shiftmask register
+        """Set the fft shiftmask register.
 
         :param id: fft/branch identifier
         :param mask: shiftmask (16 bit)
@@ -1044,7 +1078,7 @@ class PhaserPulsegen:
 
     @kernel
     def set_nr_repeats(self, rep):
-        """sets the number of fft repeats
+        """Set the number of fft repeats.
 
         :param rep: nr repetitions (16 bit)
         """
@@ -1055,7 +1089,7 @@ class PhaserPulsegen:
 
     @kernel
     def start_fft(self, id):
-        """starts the fft computation
+        """Start the fft computation.
 
         :param id: fft/branch identifier
         """
@@ -1064,7 +1098,7 @@ class PhaserPulsegen:
 
     @kernel
     def set_interpolation_rate(self, id, rate):
-        """set the interpolation rate
+        """Set the interpolation rate.
 
         :param id: fft/branch identifier
         :param rate: interpolation rate (16 bit)
@@ -1077,7 +1111,9 @@ class PhaserPulsegen:
 
     @kernel
     def check_fft_busy(self) -> TInt32:
-        """checks if in fft computation
+        """Check if in fft computation. UNTESTED
+
+        :return: 1 if busy and 0 if not.
         """
         rtio_output((self.channel_base << 8) | PHASER_ADDR_STFT_FFT_BUSY, 0)
         response = rtio_input_data(self.channel_base)
@@ -1085,7 +1121,9 @@ class PhaserPulsegen:
 
     @kernel
     def check_pulsegen_busy(self) -> TInt32:
-        """check if pulsegen is currently emitting a pulse
+        """Check if pulsegen is currently emitting a pulse. UNTESTED
+
+        :return: 1 if busy and 0 if not.
         """
         rtio_output((self.channel_base << 8) | PHASER_ADDR_STFT_PULSEGEN_BUSY, 0)
         response = rtio_input_data(self.channel_base)
@@ -1157,8 +1195,8 @@ class PhaserPulsegen:
 
     @kernel
     def send_coef(self, id, adr, real, imag):
-        """send a set (max. nr_coef_per_frame) of consecutive fft coefficients to phaser
-        starting at adress adr
+        """Send a set (max. nr_coef_per_frame) of consecutive fft coefficients to phaser
+        starting at adress adr.
 
         :param id: fft/branch identifier
         :param adr: frame fft mem base address
@@ -1182,13 +1220,13 @@ class PhaserPulsegen:
 
     @kernel
     def clear_staging_area(self):
-        """clears the frame staging area in the phy
+        """Clear the frame staging area in the phy.
         """
         rtio_output(self.addr | 0x3e, 1)
 
     @kernel
     def stage_coef_adr(self, id, adr):
-        """write fft memory address of a frame into staging area
+        """Write fft memory address of a frame into staging area.
 
         :param id: fft/branch identifier
         :param adr: frame fft mem base address
@@ -1198,7 +1236,7 @@ class PhaserPulsegen:
 
     @kernel
     def stage_coef_data(self, pos, r, i):
-        """write i/q data in staging frame location
+        """Write i/q data in staging frame location.
 
         :param pos: frame loaction
         :param r: real data
@@ -1209,14 +1247,14 @@ class PhaserPulsegen:
 
     @kernel
     def send_frame(self):
-        """send out a frame
+        """Send out an FFT frame with the staged data next.
         """
         rtio_output(self.addr | 0x3f, 1)
         delay_mu(int64(self.tframe))
 
     @kernel
     def send_full_coef(self, id, real, imag):
-        """sends a full fft coefficient set to phaser
+        """Sends a full fft coefficient set to phaser.
 
         :param id: fft/branch identifier
         :param real: real coefficient data array
@@ -1244,7 +1282,7 @@ class PhaserPulsegen:
 
     @kernel
     def clear_full_coef(self, id):
-        """sets all coefficients on phaser to zero
+        """Sets all coefficients on phaser to zero.
 
         :param id: fft/branch identifier
         """
