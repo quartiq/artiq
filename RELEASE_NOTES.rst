@@ -3,18 +3,31 @@
 Release notes
 =============
 
+ARTIQ-7
+-------
+
+Highlights:
+* WRPLL
+* ``get()``, ``get_mu()``, ``get_att()``, and ``get_att_mu()`` functions added for AD9910 and AD9912
+
+Breaking changes:
+
+
 ARTIQ-6
 -------
 
 Highlights:
 
 * New hardware support:
+   - Phaser, a quad channel 1GS/s RF generator card with dual IQ upconverter and dual 5MS/s
+     ADC and FPGA.
    - Zynq SoC core devices, enabling kernels to run on 1 GHz CPU core with a floating-point
      unit for faster computations. This currently requires an external
-     repository (https://git.m-labs.hk/m-labs/artiq-zynq) and only supports the ZC706.
+     repository (https://git.m-labs.hk/m-labs/artiq-zynq).
    - Mirny 4-channel wide-band PLL/VCO-based microwave frequency synthesiser
    - Fastino 32-channel, 3MS/s per channel, 16-bit DAC EEM
-   - Kasli 2.0
+   - Kasli 2.0, an improved core device with 12 built-in EEM slots, faster FPGA, 4 SFPs, and
+     high-precision clock recovery circuitry for DRTIO (to be supported in ARTIQ-7).
 * ARTIQ Python (core device kernels):
    - Multidimensional arrays are now available on the core device, using NumPy syntax.
      Elementwise operations (e.g. ``+``, ``/``), matrix multiplication (``@``) and
@@ -32,18 +45,25 @@ Highlights:
 * Zotino now exposes  ``voltage_to_mu()``
 * ``ad9910``: The maximum amplitude scale factor is now ``0x3fff`` (was ``0x3ffe``
   before).
+* Mirny now supports HW revision independent, human readable ``clk_sel`` parameters:
+  "XO", "SMA", and "MMCX". Passing an integer is backwards compatible.
 * Dashboard:
    - Applets now restart if they are running and a ccb call changes their spec
    - A "Quick Open" dialog to open experiments by typing part of their name can
      be brought up Ctrl-P (Ctrl+Return to immediately submit the selected entry
      with the default arguments).
-* Experiment results are now always saved to HDF5, even if run() fails.
+   - The Applets dock now has a context menu command to quickly close all open
+     applets (shortcut: Ctrl-Alt-W).
+* Experiment results are now always saved to HDF5, even if ``run()`` fails.
 * Core device: ``panic_reset 1`` now correctly resets the kernel CPU as well if
   communication CPU panic occurs.
 * NumberValue accepts a ``type`` parameter specifying the output as ``int`` or ``float``
 * A parameter ``--identifier-str`` has been added to many targets to aid
   with reproducible builds.
 * Python 3.7 support in Conda packages.
+* `kasli_generic` JSON descriptions are now validated against a
+  schema. Description defaults have moved from Python to the
+  schema. Warns if ARTIQ version is too old.
 
 Breaking changes:
 
@@ -54,7 +74,11 @@ Breaking changes:
   thin veneer around lists. Most prior use cases of NumPy arrays in kernels should work
   unchanged with the new implementation, but the behavior might differ slightly in some
   cases (for instance, non-rectangular arrays are not currently supported).
-
+* ``quamash`` has been replaced with ``qasync``.
+* Protocols are updated to use device endian.
+* Analyzer dump format includes a byte for device endianness.
+* Experiment classes with underscore-prefixed names are now ignored when ``artiq_client``
+  determines which experiment to submit (consistent with ``artiq_run``).
 
 ARTIQ-5
 -------

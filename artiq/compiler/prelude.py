@@ -25,6 +25,7 @@ def globals():
         "IndexError":           builtins.fn_IndexError(),
         "ValueError":           builtins.fn_ValueError(),
         "ZeroDivisionError":    builtins.fn_ZeroDivisionError(),
+        "RuntimeError":         builtins.fn_RuntimeError(),
 
         # Built-in Python functions
         "len":                  builtins.fn_len(),
@@ -43,7 +44,6 @@ def globals():
         "parallel":             builtins.obj_parallel(),
         "interleave":           builtins.obj_interleave(),
         "sequential":           builtins.obj_sequential(),
-        "watchdog":             builtins.fn_watchdog(),
 
         # ARTIQ time management functions
         "delay":                builtins.fn_delay(),

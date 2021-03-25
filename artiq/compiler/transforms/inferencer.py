@@ -8,6 +8,28 @@ from .. import asttyped, types, builtins
 from .typedtree_printer import TypedtreePrinter
 
 
+def is_nested_empty_list(node):
+    """If the passed AST node is an empty list, or a regularly nested list thereof,
+    returns the number of nesting layers, or ``None`` otherwise.
+
+    For instance, ``is_nested_empty_list([]) == 1`` and
+    ``is_nested_empty_list([[], []]) == 2``, but
+    ``is_nested_empty_list([[[]], []]) == None`` as the number of nesting layers doesn't
+    match.
+    """
+    if not isinstance(node, ast.List):
+        return None
+    if not node.elts:
+        return 1
+    result = is_nested_empty_list(node.elts[0])
+    if result is None:
+        return None
+    for elt in node.elts[:1]:
+        if result != is_nested_empty_list(elt):
+            return None
+    return result + 1
+
+
 class Inferencer(algorithm.Visitor):
     """
     :class:`Inferencer` infers types by recursively applying the unification
@@ -216,6 +238,7 @@ class Inferencer(algorithm.Visitor):
                         value.loc, None)
 
     def visit_SliceT(self, node):
+        self.generic_visit(node)
         if (node.lower, node.upper, node.step) == (None, None, None):
             self._unify(node.type, builtins.TInt32(),
                         node.loc, None)
@@ -268,12 +291,21 @@ class Inferencer(algorithm.Visitor):
             else:
                 self._unify_iterable(element=node, collection=node.value)
         elif isinstance(node.slice, ast.Slice):
+            if builtins.is_array(node.value.type):
+                if node.slice.step is not None:
+                    diag = diagnostic.Diagnostic(
+                        "error",
+                        "strided slicing not yet supported for NumPy arrays", {},
+                        node.slice.step.loc, [])
+                    self.engine.process(diag)
+                    return
             self._unify(node.type, node.value.type, node.loc, node.value.loc)
         else:  # ExtSlice
             pass  # error emitted above
 
     def visit_IfExpT(self, node):
         self.generic_visit(node)
+        self._unify(node.test.type, builtins.TBool(), node.test.loc, None)
         self._unify(node.body.type, node.orelse.type,
                     node.body.loc, node.orelse.loc)
         self._unify(node.type, node.body.type,
@@ -882,28 +914,45 @@ class Inferencer(algorithm.Visitor):
             if len(node.args) == 1 and keywords_acceptable:
                 arg, = node.args
 
-                # In the absence of any other information (there currently isn't a way
-                # to specify any), assume that all iterables are expandable into a
-                # (runtime-checked) rectangular array of the innermost element type.
-                elt = arg.type
-                num_dims = 0
-                result_dims = (node.type.find()["num_dims"].value
-                               if builtins.is_array(node.type) else -1)
-                while True:
-                    if num_dims == result_dims:
-                        # If we already know the number of dimensions of the result,
-                        # stop so we can disambiguate the (innermost) element type of
-                        # the argument if it is still unknown (e.g. empty array).
-                        break
-                    if types.is_var(elt):
-                        return  # undetermined yet
-                    if not builtins.is_iterable(elt) or builtins.is_str(elt):
-                        break
-                    if builtins.is_array(elt):
-                        num_dims += elt.find()["num_dims"].value
-                    else:
-                        num_dims += 1
-                    elt = builtins.get_iterable_elt(elt)
+                num_empty_dims = is_nested_empty_list(arg)
+                if num_empty_dims is not None:
+                    # As a special case, following the behaviour of numpy.array (and
+                    # repr() on ndarrays), consider empty lists to be exactly of the
+                    # number of dimensions given, instead of potentially containing an
+                    # unknown number of extra dimensions.
+                    num_dims = num_empty_dims
+
+                    # The ultimate element type will be TVar initially, but we might be
+                    # able to resolve it from context.
+                    elt = arg.type
+                    for _ in range(num_dims):
+                        assert builtins.is_list(elt)
+                        elt = elt.find()["elt"]
+                else:
+                    # In the absence of any other information (there currently isn't a way
+                    # to specify any), assume that all iterables are expandable into a
+                    # (runtime-checked) rectangular array of the innermost element type.
+                    elt = arg.type
+                    num_dims = 0
+                    expected_dims = (node.type.find()["num_dims"].value
+                                    if builtins.is_array(node.type) else -1)
+                    while True:
+                        if num_dims == expected_dims:
+                            # If we already know the number of dimensions of the result,
+                            # stop so we can disambiguate the (innermost) element type of
+                            # the argument if it is still unknown.
+                            break
+                        if types.is_var(elt):
+                            # Can't make progress here because we don't know how many more
+                            # dimensions might be "hidden" inside.
+                            return
+                        if not builtins.is_iterable(elt) or builtins.is_str(elt):
+                            break
+                        if builtins.is_array(elt):
+                            num_dims += elt.find()["num_dims"].value
+                        else:
+                            num_dims += 1
+                        elt = builtins.get_iterable_elt(elt)
 
                 if explicit_dtype is not None:
                     # TODO: Factor out type detection; support quoted type constructors
@@ -1211,9 +1260,6 @@ class Inferencer(algorithm.Visitor):
         elif types.is_builtin(typ, "at_mu"):
             simple_form("at_mu(time_mu:numpy.int64) -> None",
                         [builtins.TInt64()])
-        elif types.is_builtin(typ, "watchdog"):
-            simple_form("watchdog(time:float) -> [builtin context manager]",
-                        [builtins.TFloat()], builtins.TNone())
         elif types.is_constructor(typ):
             # An user-defined class.
             self._unify(node.type, typ.find().instance,
@@ -1458,9 +1504,7 @@ class Inferencer(algorithm.Visitor):
 
         typ = node.context_expr.type
         if (types.is_builtin(typ, "interleave") or types.is_builtin(typ, "sequential") or
-            types.is_builtin(typ, "parallel") or
-                (isinstance(node.context_expr, asttyped.CallT) and
-                 types.is_builtin(node.context_expr.func.type, "watchdog"))):
+            types.is_builtin(typ, "parallel")):
             # builtin context managers
             if node.optional_vars is not None:
                 self._unify(node.optional_vars.type, builtins.TNone(),

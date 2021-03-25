@@ -162,10 +162,11 @@ class ASTSynthesizer:
             typ = builtins.TNone()
             return asttyped.NameConstantT(value=value, type=typ,
                                           loc=self._add(repr(value)))
-        elif value is True or value is False:
+        elif isinstance(value, (bool, numpy.bool_)):
             typ = builtins.TBool()
-            return asttyped.NameConstantT(value=value, type=typ,
-                                          loc=self._add(repr(value)))
+            coerced = bool(value)
+            return asttyped.NameConstantT(value=coerced, type=typ,
+                                          loc=self._add(repr(coerced)))
         elif value is numpy.float:
             typ = builtins.fn_float()
             return asttyped.NameConstantT(value=None, type=typ,
@@ -522,7 +523,7 @@ class StitchingInferencer(Inferencer):
             self.engine.process(diag)
             return
 
-        # Figure out what ARTIQ type does the value of the attribute have.
+        # Figure out the ARTIQ type of the value of the attribute.
         # We do this by quoting it, as if to serialize. This has some
         # overhead (i.e. synthesizing a source buffer), but has the advantage
         # of having the host-to-ARTIQ mapping code in only one place and

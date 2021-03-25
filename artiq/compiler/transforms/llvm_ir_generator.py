@@ -395,10 +395,6 @@ class LLVMIRGenerator:
         elif name == "delay_mu":
             llty = ll.FunctionType(llvoid, [lli64])
 
-        elif name == "watchdog_set":
-            llty = ll.FunctionType(lli32, [lli64])
-        elif name == "watchdog_clear":
-            llty = ll.FunctionType(llvoid, [lli32])
         else:
             assert False
 
@@ -407,7 +403,6 @@ class LLVMIRGenerator:
             if name in ("__artiq_raise", "__artiq_reraise", "llvm.trap"):
                 llglobal.attributes.add("noreturn")
             if name in ("rtio_log", "rpc_send", "rpc_send_async",
-                        "watchdog_set", "watchdog_clear",
                         self.target.print_function):
                 llglobal.attributes.add("nounwind")
             if name.find("__py_") == 0:
@@ -1239,12 +1234,6 @@ class LLVMIRGenerator:
                 return llstore_lo
             else:
                 return self.llbuilder.call(self.llbuiltin("delay_mu"), [llinterval])
-        elif insn.op == "watchdog_set":
-            interval, = insn.operands
-            return self.llbuilder.call(self.llbuiltin("watchdog_set"), [self.map(interval)])
-        elif insn.op == "watchdog_clear":
-            id, = insn.operands
-            return self.llbuilder.call(self.llbuiltin("watchdog_clear"), [self.map(id)])
         else:
             assert False
 
@@ -1321,7 +1310,7 @@ class LLVMIRGenerator:
                 diag = diagnostic.Diagnostic("error",
                     "type {type} is not supported in remote procedure calls",
                     {"type": printer.name(arg.type)},
-                    arg.loc)
+                    arg.loc, notes=[note])
                 self.engine.process(diag)
             tag += ir.rpc_tag(arg.type, arg_error_handler)
         tag += b":"
@@ -1335,7 +1324,7 @@ class LLVMIRGenerator:
             diag = diagnostic.Diagnostic("error",
                 "return type {type} is not supported in remote procedure calls",
                 {"type": printer.name(fun_type.ret)},
-                fun_loc)
+                fun_loc, notes=[note])
             self.engine.process(diag)
         tag += ir.rpc_tag(fun_type.ret, ret_error_handler)
 
@@ -1485,19 +1474,22 @@ class LLVMIRGenerator:
             llstackptr = self.llbuilder.call(self.llbuiltin("llvm.stacksave"), [])
 
             llresultslot = self.llbuilder.alloca(llfun.type.pointee.args[0].pointee)
-            llcall = self.llbuilder.invoke(llfun, llargs, llnormalblock, llunwindblock,
-                                           name=insn.name)
+            llcall = self.llbuilder.invoke(llfun, [llresultslot] + llargs,
+                                           llnormalblock, llunwindblock, name=insn.name)
+
+            self.llbuilder.position_at_start(llnormalblock)
             llresult = self.llbuilder.load(llresultslot)
 
             self.llbuilder.call(self.llbuiltin("llvm.stackrestore"), [llstackptr])
         else:
             llcall = self.llbuilder.invoke(llfun, llargs, llnormalblock, llunwindblock,
                                            name=insn.name)
+            llresult = llcall
 
             # The !tbaa metadata is not legal to use with the invoke instruction,
             # so unlike process_Call, we do not set it here.
 
-        return llcall
+        return llresult
 
     def _quote_listish_to_llglobal(self, value, elt_type, path, kind_name):
         llelts    = [self._quote(value[i], elt_type, lambda: path() + [str(i)])
@@ -1569,7 +1561,8 @@ class LLVMIRGenerator:
             return ll.Constant.literal_struct([])
         elif builtins.is_bool(typ):
             assert value in (True, False), fail_msg
-            return ll.Constant(llty, value)
+            # Explicitly cast to bool to handle numpy.bool_.
+            return ll.Constant(llty, bool(value))
         elif builtins.is_int(typ):
             assert isinstance(value, (int, numpy.int32, numpy.int64)), fail_msg
             return ll.Constant(llty, int(value))

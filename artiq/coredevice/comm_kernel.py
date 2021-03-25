@@ -8,6 +8,7 @@ from fractions import Fraction
 from collections import namedtuple
 
 from artiq.coredevice import exceptions
+from artiq.coredevice.comm import initialize_connection
 from artiq import __version__ as software_version
 
 
@@ -36,7 +37,6 @@ class Reply(Enum):
 
     RPCRequest = 10
 
-    WatchdogExpired = 14
     ClockFailure = 15
 
 
@@ -66,16 +66,16 @@ def _receive_list(kernel, embedding_map):
     tag = chr(kernel._read_int8())
     if tag == "b":
         buffer = kernel._read(length)
-        return list(buffer)
+        return [bool(a) for a in buffer]
     elif tag == "i":
         buffer = kernel._read(4 * length)
-        return list(struct.unpack(">%sl" % length, buffer))
+        return list(struct.unpack(kernel.endian + "%sl" % length, buffer))
     elif tag == "I":
         buffer = kernel._read(8 * length)
-        return list(struct.unpack(">%sq" % length, buffer))
+        return list(struct.unpack(kernel.endian + "%sq" % length, buffer))
     elif tag == "f":
         buffer = kernel._read(8 * length)
-        return list(struct.unpack(">%sd" % length, buffer))
+        return list(struct.unpack(kernel.endian + "%sd" % length, buffer))
     else:
         fn = receivers[tag]
         elems = []
@@ -96,16 +96,16 @@ def _receive_array(kernel, embedding_map):
     length = numpy.prod(shape)
     if tag == "b":
         buffer = kernel._read(length)
-        elems = numpy.ndarray((length, ), 'B', buffer)
+        elems = numpy.ndarray((length, ), '?', buffer)
     elif tag == "i":
         buffer = kernel._read(4 * length)
-        elems = numpy.ndarray((length, ), '>i4', buffer)
+        elems = numpy.ndarray((length, ), kernel.endian + 'i4', buffer)
     elif tag == "I":
         buffer = kernel._read(8 * length)
-        elems = numpy.ndarray((length, ), '>i8', buffer)
+        elems = numpy.ndarray((length, ), kernel.endian + 'i8', buffer)
     elif tag == "f":
         buffer = kernel._read(8 * length)
-        elems = numpy.ndarray((length, ), '>d', buffer)
+        elems = numpy.ndarray((length, ), kernel.endian + 'd', buffer)
     else:
         fn = receivers[tag]
         elems = []
@@ -181,21 +181,27 @@ class CommKernel:
         self.read_buffer = bytearray()
         self.write_buffer = bytearray()
 
-        self.unpack_int32 = struct.Struct(">l").unpack
-        self.unpack_int64 = struct.Struct(">q").unpack
-        self.unpack_float64 = struct.Struct(">d").unpack
-
-        self.pack_header = struct.Struct(">lB").pack
-        self.pack_int32 = struct.Struct(">l").pack
-        self.pack_int64 = struct.Struct(">q").pack
-        self.pack_float64 = struct.Struct(">d").pack
 
     def open(self):
         if hasattr(self, "socket"):
             return
-        self.socket = socket.create_connection((self.host, self.port))
-        logger.debug("connected to %s:%d", self.host, self.port)
+        self.socket = initialize_connection(self.host, self.port)
         self.socket.sendall(b"ARTIQ coredev\n")
+        endian = self._read(1)
+        if endian == b"e":
+            self.endian = "<"
+        elif endian == b"E":
+            self.endian = ">"
+        else:
+            raise IOError("Incorrect reply from device: expected e/E.")
+        self.unpack_int32 = struct.Struct(self.endian + "l").unpack
+        self.unpack_int64 = struct.Struct(self.endian + "q").unpack
+        self.unpack_float64 = struct.Struct(self.endian + "d").unpack
+
+        self.pack_header = struct.Struct(self.endian + "lB").pack
+        self.pack_int32 = struct.Struct(self.endian + "l").pack
+        self.pack_int64 = struct.Struct(self.endian + "q").pack
+        self.pack_float64 = struct.Struct(self.endian + "d").pack
 
     def close(self):
         if not hasattr(self, "socket"):
@@ -217,7 +223,10 @@ class CommKernel:
             flag = 0
             if diff > 8192:
                 flag |= socket.MSG_WAITALL
-            self.read_buffer += self.socket.recv(8192, flag)
+            new_buffer = self.socket.recv(8192, flag)
+            if not new_buffer:
+                raise ConnectionResetError("Core device connection closed unexpectedly")
+            self.read_buffer += new_buffer
         result = self.read_buffer[:length]
         self.read_buffer = self.read_buffer[length:]
         return result
@@ -467,11 +476,14 @@ class CommKernel:
             if tag_element == "b":
                 self._write(bytes(value))
             elif tag_element == "i":
-                self._write(struct.pack(">%sl" % len(value), *value))
+                self._write(struct.pack(self.endian + "%sl" %
+                                        len(value), *value))
             elif tag_element == "I":
-                self._write(struct.pack(">%sq" % len(value), *value))
+                self._write(struct.pack(self.endian + "%sq" %
+                                        len(value), *value))
             elif tag_element == "f":
-                self._write(struct.pack(">%sd" % len(value), *value))
+                self._write(struct.pack(self.endian + "%sd" %
+                                        len(value), *value))
             else:
                 for elt in value:
                     tags_copy = bytearray(tags)
@@ -489,13 +501,16 @@ class CommKernel:
             if tag_element == "b":
                 self._write(value.reshape((-1,), order="C").tobytes())
             elif tag_element == "i":
-                array = value.reshape((-1,), order="C").astype('>i4')
+                array = value.reshape(
+                    (-1,), order="C").astype(self.endian + 'i4')
                 self._write(array.tobytes())
             elif tag_element == "I":
-                array = value.reshape((-1,), order="C").astype('>i8')
+                array = value.reshape(
+                    (-1,), order="C").astype(self.endian + 'i8')
                 self._write(array.tobytes())
             elif tag_element == "f":
-                array = value.reshape((-1,), order="C").astype('>d')
+                array = value.reshape(
+                    (-1,), order="C").astype(self.endian + 'd')
                 self._write(array.tobytes())
             else:
                 for elt in value.reshape((-1,), order="C"):
@@ -627,8 +642,6 @@ class CommKernel:
                 self._serve_rpc(embedding_map)
             elif self._read_type == Reply.KernelException:
                 self._serve_exception(embedding_map, symbolizer, demangler)
-            elif self._read_type == Reply.WatchdogExpired:
-                raise exceptions.WatchdogExpired
             elif self._read_type == Reply.ClockFailure:
                 raise exceptions.ClockFailure
             else:

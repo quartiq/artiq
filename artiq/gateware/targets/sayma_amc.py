@@ -3,8 +3,10 @@
 import argparse
 import os
 import warnings
+from functools import partial
 
 from migen import *
+from migen.build.generic_platform import IOStandard
 
 from misoc.cores import gpio
 from misoc.integration.builder import builder_args, builder_argdict
@@ -192,6 +194,8 @@ class SatelliteBase(MiniSoC):
 # JESD204 DAC Channel Group
 class JDCGSAWG(Module, AutoCSR):
     def __init__(self, platform, sys_crg, jesd_crg, dac):
+        # Kintex Ultrascale GTH, speed grade -1C:
+        # CPLL linerate (D=1): 4.0 - 8.5 Gb/s
         self.submodules.jesd = jesd204_tools.UltrascaleTX(
             platform, sys_crg, jesd_crg, dac)
 
@@ -347,10 +351,13 @@ class Satellite(SatelliteBase):
 
         # FMC-VHDCI-EEM DIOs x 2 (all OUTPUTs)
         platform.add_connectors(fmcdio_vhdci_eem.connectors)
+        output_4x = partial(ttl_serdes_ultrascale.Output, 4)
         eem.DIO.add_std(self, 0,
-            ttl_simple.Output, ttl_simple.Output, iostandard="LVDS")
+            output_4x, output_4x,
+            iostandard=lambda eem: IOStandard("LVDS"))
         eem.DIO.add_std(self, 1,
-            ttl_simple.Output, ttl_simple.Output, iostandard="LVDS")
+            output_4x, output_4x,
+            iostandard=lambda eem: IOStandard("LVDS"))
         # FMC-DIO-32ch-LVDS-a Direction Control Pins (via shift register) as TTLs x 3
         platform.add_extension(fmcdio_vhdci_eem.io)
         print("fmcdio_vhdci_eem.[CLK, SER, LATCH] starting at RTIO channel 0x{:06x}"
@@ -416,7 +423,7 @@ def main():
     parser.add_argument("-V", "--variant", default="satellite",
         help="variant: satellite/simplesatellite "
              "(default: %(default)s)")
-    parser.add_argument("--sfp", default=False,
+    parser.add_argument("--sfp", default=False, action="store_true",
         help="use SFP port for DRTIO instead of uTCA backplane")
     parser.add_argument("--rtm-csr-csv",
         default=os.path.join("artiq_sayma", "rtm_gateware", "rtm_csr.csv"),

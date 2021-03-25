@@ -390,6 +390,14 @@ class ARTIQIRGenerator(algorithm.Visitor):
     def visit_AugAssign(self, node):
         lhs = self.visit(node.target)
         rhs = self.visit(node.value)
+
+        if builtins.is_array(lhs.type):
+            name = type(node.op).__name__
+            def make_op(l, r):
+                return self.append(ir.Arith(node.op, l, r))
+            self._broadcast_binop(name, make_op, lhs.type, lhs, rhs, assign_to_lhs=True)
+            return
+
         value = self.append(ir.Arith(node.op, lhs, rhs))
         try:
             self.current_assign = value
@@ -851,34 +859,23 @@ class ARTIQIRGenerator(algorithm.Visitor):
 
         cleanup = []
         for item_node in node.items:
+            # user-defined context manager
             context_expr_node  = item_node.context_expr
             optional_vars_node = item_node.optional_vars
+            context_mgr = self.visit(context_expr_node)
+            enter_fn    = self.append(ir.GetAttr(context_mgr, '__enter__'))
+            exit_fn     = self.append(ir.GetAttr(context_mgr, '__exit__'))
 
-            if isinstance(context_expr_node, asttyped.CallT) and \
-                    types.is_builtin(context_expr_node.func.type, "watchdog"):
-                timeout        = self.visit(context_expr_node.args[0])
-                timeout_ms     = self.append(ir.Arith(ast.Mult(loc=None), timeout,
-                                                      ir.Constant(1000, builtins.TFloat())))
-                timeout_ms_int = self.append(ir.Coerce(timeout_ms, builtins.TInt64()))
+            try:
+                self.current_assign = self._user_call(enter_fn, [], {})
+                if optional_vars_node is not None:
+                    self.visit(optional_vars_node)
+            finally:
+                self.current_assign = None
 
-                watchdog_id = self.append(ir.Builtin("watchdog_set", [timeout_ms_int],
-                                                     builtins.TInt32()))
-                cleanup.append(lambda:
-                    self.append(ir.Builtin("watchdog_clear", [watchdog_id], builtins.TNone())))
-            else: # user-defined context manager
-                context_mgr = self.visit(context_expr_node)
-                enter_fn    = self.append(ir.GetAttr(context_mgr, '__enter__'))
-                exit_fn     = self.append(ir.GetAttr(context_mgr, '__exit__'))
-
-                try:
-                    self.current_assign = self._user_call(enter_fn, [], {})
-                    if optional_vars_node is not None:
-                        self.visit(optional_vars_node)
-                finally:
-                    self.current_assign = None
-
-                none = self.append(ir.Alloc([], builtins.TNone()))
-                cleanup.append(lambda fn=exit_fn: self._user_call(fn, [none, none, none], {}))
+            none = self.append(ir.Alloc([], builtins.TNone()))
+            cleanup.append(lambda:
+                self._user_call(exit_fn, [none, none, none], {}))
 
         self._try_finally(
             body_gen=lambda: self.visit(node.body),
@@ -1119,7 +1116,11 @@ class ARTIQIRGenerator(algorithm.Visitor):
                                                                   _readable_name(index))))
             if self.current_assign is None:
                 return indexed
-        else: # Slice
+        else:
+            # This is a slice. The endpoint checking logic is the same for both lists
+            # and NumPy arrays, but the actual implementations differ – while slices of
+            # built-in lists are always copies in Python, they are views sharing the
+            # same backing storage in NumPy.
             length = self.iterable_len(value, node.slice.type)
 
             if node.slice.lower is not None:
@@ -1144,91 +1145,127 @@ class ARTIQIRGenerator(algorithm.Visitor):
             mapped_stop_index = self._map_index(length, stop_index, one_past_the_end=True,
                                                 loc=node.begin_loc)
 
-            if node.slice.step is not None:
-                try:
-                    old_assign, self.current_assign = self.current_assign, None
-                    step = self.visit(node.slice.step)
-                finally:
-                    self.current_assign = old_assign
+            if builtins.is_array(node.type):
+                # To implement strided slicing with the proper NumPy reference
+                # semantics, the pointer/length array representation will need to be
+                # extended by another field to hold a variable stride.
+                assert node.slice.step is None, (
+                    "array slices with non-trivial step "
+                    "should have been disallowed during type inference")
 
+                # One-dimensionally slicing an array only affects the outermost
+                # dimension.
+                shape = self.append(ir.GetAttr(value, "shape"))
+                lengths = [
+                    self.append(ir.GetAttr(shape, i))
+                    for i in range(len(shape.type.elts))
+                ]
+
+                # Compute outermost length – zero for "backwards" indices.
+                raw_len = self.append(
+                    ir.Arith(ast.Sub(loc=None), mapped_stop_index, mapped_start_index))
+                is_neg_len = self.append(
+                    ir.Compare(ast.Lt(loc=None), raw_len, ir.Constant(0, raw_len.type)))
+                outer_len = self.append(
+                    ir.Select(is_neg_len, ir.Constant(0, raw_len.type), raw_len))
+                new_shape = self._make_array_shape([outer_len] + lengths[1:])
+
+                # Offset buffer pointer by start index (times stride for inner dims).
+                stride = reduce(
+                    lambda l, r: self.append(ir.Arith(ast.Mult(loc=None), l, r)),
+                    lengths[1:], ir.Constant(1, lengths[0].type))
+                offset = self.append(
+                    ir.Arith(ast.Mult(loc=None), stride, mapped_start_index))
+                buffer = self.append(ir.GetAttr(value, "buffer"))
+                new_buffer = self.append(ir.Offset(buffer, offset))
+
+                return self.append(ir.Alloc([new_buffer, new_shape], node.type))
+            else:
+                if node.slice.step is not None:
+                    try:
+                        old_assign, self.current_assign = self.current_assign, None
+                        step = self.visit(node.slice.step)
+                    finally:
+                        self.current_assign = old_assign
+
+                    self._make_check(
+                        self.append(ir.Compare(ast.NotEq(loc=None), step, ir.Constant(0, step.type))),
+                        lambda: self.alloc_exn(builtins.TException("ValueError"),
+                            ir.Constant("step cannot be zero", builtins.TStr())),
+                        loc=node.slice.step.loc)
+                else:
+                    step = ir.Constant(1, node.slice.type)
+                counting_up = self.append(ir.Compare(ast.Gt(loc=None), step,
+                                                    ir.Constant(0, step.type)))
+
+                unstepped_size = self.append(ir.Arith(ast.Sub(loc=None),
+                                                    mapped_stop_index, mapped_start_index))
+                slice_size_a = self.append(ir.Arith(ast.FloorDiv(loc=None), unstepped_size, step))
+                slice_size_b = self.append(ir.Arith(ast.Mod(loc=None), unstepped_size, step))
+                rem_not_empty = self.append(ir.Compare(ast.NotEq(loc=None), slice_size_b,
+                                                    ir.Constant(0, slice_size_b.type)))
+                slice_size_c = self.append(ir.Arith(ast.Add(loc=None), slice_size_a,
+                                                    ir.Constant(1, slice_size_a.type)))
+                slice_size = self.append(ir.Select(rem_not_empty,
+                                                slice_size_c, slice_size_a,
+                                                name="slice.size"))
                 self._make_check(
-                    self.append(ir.Compare(ast.NotEq(loc=None), step, ir.Constant(0, step.type))),
-                    lambda: self.alloc_exn(builtins.TException("ValueError"),
-                        ir.Constant("step cannot be zero", builtins.TStr())),
-                    loc=node.slice.step.loc)
-            else:
-                step = ir.Constant(1, node.slice.type)
-            counting_up = self.append(ir.Compare(ast.Gt(loc=None), step,
-                                                 ir.Constant(0, step.type)))
+                    self.append(ir.Compare(ast.LtE(loc=None), slice_size, length)),
+                    lambda slice_size, length: self.alloc_exn(builtins.TException("ValueError"),
+                        ir.Constant("slice size {0} is larger than iterable length {1}",
+                                    builtins.TStr()),
+                        slice_size, length),
+                    params=[slice_size, length],
+                    loc=node.slice.loc)
 
-            unstepped_size = self.append(ir.Arith(ast.Sub(loc=None),
-                                                  mapped_stop_index, mapped_start_index))
-            slice_size_a = self.append(ir.Arith(ast.FloorDiv(loc=None), unstepped_size, step))
-            slice_size_b = self.append(ir.Arith(ast.Mod(loc=None), unstepped_size, step))
-            rem_not_empty = self.append(ir.Compare(ast.NotEq(loc=None), slice_size_b,
-                                                   ir.Constant(0, slice_size_b.type)))
-            slice_size_c = self.append(ir.Arith(ast.Add(loc=None), slice_size_a,
-                                                ir.Constant(1, slice_size_a.type)))
-            slice_size = self.append(ir.Select(rem_not_empty,
-                                               slice_size_c, slice_size_a,
-                                               name="slice.size"))
-            self._make_check(
-                self.append(ir.Compare(ast.LtE(loc=None), slice_size, length)),
-                lambda slice_size, length: self.alloc_exn(builtins.TException("ValueError"),
-                    ir.Constant("slice size {0} is larger than iterable length {1}",
-                                builtins.TStr()),
-                    slice_size, length),
-                params=[slice_size, length],
-                loc=node.slice.loc)
+                if self.current_assign is None:
+                    is_neg_size = self.append(ir.Compare(ast.Lt(loc=None),
+                                                        slice_size, ir.Constant(0, slice_size.type)))
+                    abs_slice_size = self.append(ir.Select(is_neg_size,
+                                                        ir.Constant(0, slice_size.type), slice_size))
+                    other_value = self.append(ir.Alloc([abs_slice_size], value.type,
+                                                    name="slice.result"))
+                else:
+                    other_value = self.current_assign
 
-            if self.current_assign is None:
-                is_neg_size = self.append(ir.Compare(ast.Lt(loc=None),
-                                                     slice_size, ir.Constant(0, slice_size.type)))
-                abs_slice_size = self.append(ir.Select(is_neg_size,
-                                                       ir.Constant(0, slice_size.type), slice_size))
-                other_value = self.append(ir.Alloc([abs_slice_size], value.type,
-                                                   name="slice.result"))
-            else:
-                other_value = self.current_assign
+                prehead = self.current_block
 
-            prehead = self.current_block
+                head = self.current_block = self.add_block("slice.head")
+                prehead.append(ir.Branch(head))
 
-            head = self.current_block = self.add_block("slice.head")
-            prehead.append(ir.Branch(head))
+                index = self.append(ir.Phi(node.slice.type,
+                                        name="slice.index"))
+                index.add_incoming(mapped_start_index, prehead)
+                other_index = self.append(ir.Phi(node.slice.type,
+                                                name="slice.resindex"))
+                other_index.add_incoming(ir.Constant(0, node.slice.type), prehead)
 
-            index = self.append(ir.Phi(node.slice.type,
-                                       name="slice.index"))
-            index.add_incoming(mapped_start_index, prehead)
-            other_index = self.append(ir.Phi(node.slice.type,
-                                             name="slice.resindex"))
-            other_index.add_incoming(ir.Constant(0, node.slice.type), prehead)
+                # Still within bounds?
+                bounded_up = self.append(ir.Compare(ast.Lt(loc=None), index, mapped_stop_index))
+                bounded_down = self.append(ir.Compare(ast.Gt(loc=None), index, mapped_stop_index))
+                within_bounds = self.append(ir.Select(counting_up, bounded_up, bounded_down))
 
-            # Still within bounds?
-            bounded_up = self.append(ir.Compare(ast.Lt(loc=None), index, mapped_stop_index))
-            bounded_down = self.append(ir.Compare(ast.Gt(loc=None), index, mapped_stop_index))
-            within_bounds = self.append(ir.Select(counting_up, bounded_up, bounded_down))
+                body = self.current_block = self.add_block("slice.body")
 
-            body = self.current_block = self.add_block("slice.body")
+                if self.current_assign is None:
+                    elem = self.iterable_get(value, index)
+                    self.append(ir.SetElem(other_value, other_index, elem))
+                else:
+                    elem = self.append(ir.GetElem(self.current_assign, other_index))
+                    self.append(ir.SetElem(value, index, elem))
 
-            if self.current_assign is None:
-                elem = self.iterable_get(value, index)
-                self.append(ir.SetElem(other_value, other_index, elem))
-            else:
-                elem = self.append(ir.GetElem(self.current_assign, other_index))
-                self.append(ir.SetElem(value, index, elem))
+                next_index = self.append(ir.Arith(ast.Add(loc=None), index, step))
+                index.add_incoming(next_index, body)
+                next_other_index = self.append(ir.Arith(ast.Add(loc=None), other_index,
+                                                        ir.Constant(1, node.slice.type)))
+                other_index.add_incoming(next_other_index, body)
+                self.append(ir.Branch(head))
 
-            next_index = self.append(ir.Arith(ast.Add(loc=None), index, step))
-            index.add_incoming(next_index, body)
-            next_other_index = self.append(ir.Arith(ast.Add(loc=None), other_index,
-                                                    ir.Constant(1, node.slice.type)))
-            other_index.add_incoming(next_other_index, body)
-            self.append(ir.Branch(head))
+                tail = self.current_block = self.add_block("slice.tail")
+                head.append(ir.BranchIf(within_bounds, body, tail))
 
-            tail = self.current_block = self.add_block("slice.tail")
-            head.append(ir.BranchIf(within_bounds, body, tail))
-
-            if self.current_assign is None:
-                return other_value
+                if self.current_assign is None:
+                    return other_value
 
     def visit_TupleT(self, node):
         if self.current_assign is None:
@@ -1606,7 +1643,7 @@ class ARTIQIRGenerator(algorithm.Visitor):
                 num_rows, num_summands, _, num_cols = self._get_matmult_shapes(lhs, rhs)
 
                 elt = result.type["elt"].find()
-                env_type = ir.TEnvironment("loop", {"$total": elt})
+                env_type = ir.TEnvironment(name + ".loop", {"$total": elt})
                 env = self.append(ir.Alloc([], env_type))
 
                 def row_loop(row_idx):
@@ -1726,7 +1763,7 @@ class ARTIQIRGenerator(algorithm.Visitor):
             return self.append(ir.Alloc([result_buffer, shape], node.type))
         return self.append(ir.GetElem(result_buffer, ir.Constant(0, self._size_type)))
 
-    def _broadcast_binop(self, name, make_op, result_type, lhs, rhs):
+    def _broadcast_binop(self, name, make_op, result_type, lhs, rhs, assign_to_lhs):
         # Broadcast scalars (broadcasting higher dimensions is not yet allowed in the
         # language).
         broadcast = False
@@ -1747,9 +1784,11 @@ class ARTIQIRGenerator(algorithm.Visitor):
                     builtins.TException("ValueError"),
                     ir.Constant("operands could not be broadcast together",
                                 builtins.TStr())))
-
-        elt = result_type.find()["elt"]
-        result, _ = self._allocate_new_array(elt, shape)
+        if assign_to_lhs:
+            result = lhs
+        else:
+            elt = result_type.find()["elt"]
+            result, _ = self._allocate_new_array(elt, shape)
         func = self._get_array_elementwise_binop(name, make_op, result_type, lhs.type,
             rhs.type)
         self._invoke_arrayop(func, [result, lhs, rhs])
@@ -1764,7 +1803,8 @@ class ARTIQIRGenerator(algorithm.Visitor):
             name = type(node.op).__name__
             def make_op(l, r):
                 return self.append(ir.Arith(node.op, l, r))
-            return self._broadcast_binop(name, make_op, node.type, lhs, rhs)
+            return self._broadcast_binop(name, make_op, node.type, lhs, rhs,
+                                         assign_to_lhs=False)
         elif builtins.is_numeric(node.type):
             lhs = self.visit(node.left)
             rhs = self.visit(node.right)
@@ -2457,7 +2497,8 @@ class ARTIQIRGenerator(algorithm.Visitor):
                 self._invoke_arrayop(func, [result, args[0]])
                 insn = result
             elif len(args) == 2:
-                insn = self._broadcast_binop(name, make_call, node.type, *args)
+                insn = self._broadcast_binop(name, make_call, node.type, *args,
+                                             assign_to_lhs=False)
             else:
                 assert False, "Broadcasting for {} arguments not implemented".format(len)
         else:

@@ -35,8 +35,7 @@ mock_modules = ["artiq.gui.waitingspinnerwidget",
                 "artiq.gui.models",
                 "artiq.compiler.module",
                 "artiq.compiler.embedding",
-                "artiq.dashboard",
-                "quamash", "pyqtgraph", "matplotlib",
+                "qasync", "pyqtgraph", "matplotlib",
                 "numpy", "dateutil", "dateutil.parser", "prettytable", "PyQt5",
                 "h5py", "serial", "scipy", "scipy.interpolate",
                 "llvmlite_artiq", "Levenshtein", "pythonparser",
@@ -96,7 +95,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = 'ARTIQ'
-copyright = '2014-2020, M-Labs Limited'
+copyright = '2014-2021, M-Labs Limited'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
